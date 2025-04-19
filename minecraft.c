@@ -1,14 +1,10 @@
-#ifdef _WIN32
 #include <windows.h>
-#else
-#include <unistd.h>
-#include <fcntl.h>
-#include <termios.h>
-#endif
+#include <conio.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 
 #define Y_PIXELS 180
 #define X_PIXELS 900
@@ -20,15 +16,7 @@
 #define VIEW_WIDTH 1
 #define BLOCK_BORDER_SIZE 0.05
 
-#ifdef _WIN32
-static HANDLE hStdin;
-static DWORD old_console_mode;
-#else
-static struct termios old_termios, new_termios;
-#endif
-
-// to cover all possible ASCII values
-static char keystate[256] = { 0 };
+static DWORD old_stdin_mode, old_stdout_mode;
 
 // vect represents a 3D vector in cartesian coordinate system
 typedef struct Vector {
@@ -37,334 +25,414 @@ typedef struct Vector {
     float z;
 } vect;
 
-// vect2 represents a pair of angles (spherical coordinates)
+// vect2 represents a pair of angles, likely for describing orientation or spherical coordinates.
 typedef struct Vector2 {
     float psi;
     float phi;
 } vect2;
 
-// combines position and view angles for the player
 typedef struct Vector_vector2 {
     vect pos;
     vect2 view;
 } player_pos_view;
 
-#ifdef _WIN32
-// Initialize Windows console for raw input
+// Prepare Windows console: disable line input & echo, enable ANSI on output
 void init_terminal() {
-    hStdin = GetStdHandle(STD_INPUT_HANDLE);
-    GetConsoleMode(hStdin, &old_console_mode);
-    DWORD mode = old_console_mode;
-    // disable line input, echo, and quick edit
-    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_QUICK_EDIT_MODE);
-    // enable window input to receive KEY_EVENTs
-    mode |= ENABLE_WINDOW_INPUT;
-    SetConsoleMode(hStdin, mode);
-}
+    HANDLE hStdin  = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
 
-// Restore original console mode
-void restore_terminal() {
-    SetConsoleMode(hStdin, old_console_mode);
-    printf("terminal restored\n");
-}
+    GetConsoleMode(hStdin,  &old_stdin_mode);
+    GetConsoleMode(hStdout, &old_stdout_mode);
 
-// Read all pending key events, updating keystate instantly
-void process_input() {
-    INPUT_RECORD record;
-    DWORD count;
-    // reset keystate
-    for (int i = 0; i < 256; i++) keystate[i] = 0;
-    // read and handle all console input events
-    while (PeekConsoleInput(hStdin, &record, 1, &count) && count > 0) {
-        ReadConsoleInput(hStdin, &record, 1, &count);
-        if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
-            char c = record.Event.KeyEvent.uChar.AsciiChar;
-            if (c) keystate[(unsigned char)c] = 1;
-        }
-    }
-}
-#else
-// POSIX terminal initialization for Unix
-void init_terminal() {
-    tcgetattr(STDIN_FILENO, &old_termios);
-    new_termios = old_termios;
-    // disable canonical mode and echo
-    new_termios.c_lflag &= ~(ICANON | ECHO);
-    tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
-    // set non-blocking read
-    fcntl(STDIN_FILENO, F_SETFL,
-          fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK);
+    // disable echo and line buffering
+    SetConsoleMode(hStdin,
+        old_stdin_mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT));
+
+    // enable ANSI escape codes on output
+    SetConsoleMode(hStdout,
+        old_stdout_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
     fflush(stdout);
 }
 
-// Restore original terminal settings
+// Restore original console modes
 void restore_terminal() {
-    tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
-    printf("terminal restored\n");
+    HANDLE hStdin  = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleMode(hStdin,  old_stdin_mode);
+    SetConsoleMode(hStdout, old_stdout_mode);
+    printf("terminal restored");
 }
 
-// Read available bytes into keystate
+// to cover all possible ASCII values
+static char keystate[256] = { 0 };
+
+// Poll any pending keypresses into keystate[]
 void process_input() {
-    char c;
-    for (int i = 0; i < 256; i++) keystate[i] = 0;
-    while (read(STDIN_FILENO, &c, 1) > 0) {
+    memset(keystate, 0, sizeof(keystate));
+    // _kbhit returns nonzero if a key is waiting
+    while (_kbhit()) {
+        int c = _getch();  // read one character (no echo)
         keystate[(unsigned char)c] = 1;
     }
 }
-#endif
 
-// check if a specific key is pressed
+// check if the key is pressed
 int is_key_pressed(char key) {
     return keystate[(unsigned char)key];
 }
 
-// allocate the 2D ASCII frame buffer
+// initialise a image in the program by creating a image buffer
 char** init_picture() {
     char** picture = malloc(sizeof(char*) * Y_PIXELS);
-    if (!picture) { perror("alloc pic"); exit(EXIT_FAILURE); }
+    if (!picture) { perror("Failed to allocate picture"); exit(EXIT_FAILURE); }
     for (int i = 0; i < Y_PIXELS; i++) {
-        picture[i] = malloc(X_PIXELS);
-        if (!picture[i]) { perror("alloc row"); exit(EXIT_FAILURE); }
+        picture[i] = malloc(sizeof(char) * X_PIXELS);
+        if (!picture[i]) { perror("Failed to allocate picture row"); exit(EXIT_FAILURE); }
     }
     return picture;
 }
 
-// allocate the 3D block world
+// make/initialise a grid based block for the game
 char*** init_blocks() {
-    char*** blocks = malloc(Z_BLOCKS * sizeof(char**));
-    if (!blocks) { perror("alloc blocks"); exit(EXIT_FAILURE); }
-    for (int z = 0; z < Z_BLOCKS; z++) {
-        blocks[z] = malloc(Y_BLOCKS * sizeof(char*));
-        if (!blocks[z]) { perror("alloc layer"); exit(EXIT_FAILURE); }
-        for (int y = 0; y < Y_BLOCKS; y++) {
-            blocks[z][y] = malloc(X_BLOCKS);
-            if (!blocks[z][y]) { perror("alloc row"); exit(EXIT_FAILURE); }
-            for (int x = 0; x < X_BLOCKS; x++) blocks[z][y][x] = ' ';
+    char*** blocks = malloc(sizeof(char**) * Z_BLOCKS);
+    if (!blocks) { perror("Failed to allocate blocks"); exit(EXIT_FAILURE); }
+    for (int i = 0; i < Z_BLOCKS; i++) {
+        blocks[i] = malloc(sizeof(char*) * Y_BLOCKS);
+        if (!blocks[i]) { perror("Failed to allocate blocks layer"); exit(EXIT_FAILURE); }
+        for (int j = 0; j < Y_BLOCKS; j++) {
+            blocks[i][j] = malloc(sizeof(char) * X_BLOCKS);
+            if (!blocks[i][j]) { perror("Failed to allocate blocks row"); exit(EXIT_FAILURE); }
+            for (int k = 0; k < X_BLOCKS; k++) {
+                blocks[i][j][k] = ' ';
+            }
         }
     }
     return blocks;
 }
 
-// initial player position and view
+// initializes and returns the starting position and viewing angles of the player in the game
 player_pos_view init_posview() {
-    player_pos_view pv;
-    pv.pos.x = 5; pv.pos.y = 5; pv.pos.z = 4 + EYE_HEIGHT;
-    pv.view.psi = 0; pv.view.phi = 0;
-    return pv;
+    player_pos_view posview;
+    posview.pos.x   = 5;
+    posview.pos.y   = 5;
+    posview.pos.z   = 4 + EYE_HEIGHT;
+    posview.view.psi = 0;
+    posview.view.phi = 0;
+    return posview;
 }
 
-// convert spherical angles to 3D direction vector
-vect angles_to_vect(vect2 ang) {
-    vect v;
-    v.x = cos(ang.psi) * cos(ang.phi);
-    v.y = cos(ang.psi) * sin(ang.phi);
-    v.z = sin(ang.psi);
-    return v;
+// convert the posview angles into vect
+vect angles_to_vect(vect2 angles) {
+    vect res;
+    res.x = cosf(angles.psi) * cosf(angles.phi);
+    res.y = cosf(angles.psi) * sinf(angles.phi);
+    res.z = sinf(angles.psi);
+    return res;
 }
 
-// vector addition
-vect vect_add(vect a, vect b) {
-    return (vect){a.x + b.x, a.y + b.y, a.z + b.z};
+// vector addition code
+vect vect_add(vect v1, vect v2) {
+    vect res = { v1.x+v2.x, v1.y+v2.y, v1.z+v2.z };
+    return res;
 }
 
-// scale a vector by s
+// scalar multiplication of a vectior v with constant a
 vect vect_scale(float s, vect v) {
-    return (vect){s * v.x, s * v.y, s * v.z};
+    vect res = { s*v.x, s*v.y, s*v.z };
+    return res;
 }
 
-// subtract b from a
-vect vect_sub(vect a, vect b) {
-    return vect_add(a, vect_scale(-1, b));
+// vector subtraction code
+vect vect_sub(vect v1, vect v2) {
+    return vect_add(v1, vect_scale(-1, v2));
 }
 
-// normalize a vector in-place
+// finding the unit vector for the vector
 void vect_normalize(vect* v) {
-    float len = sqrt(v->x*v->x + v->y*v->y + v->z*v->z);
-    if (len > 0) { v->x/=len; v->y/=len; v->z/=len; }
+    float len = sqrtf(v->x*v->x + v->y*v->y + v->z*v->z);
+    if (len > 0) {
+        v->x /= len;
+        v->y /= len;
+        v->z /= len;
+    }
 }
 
-// prepare ray directions for each pixel
+// initializes a 2D array of direction vectors for each pixel on a screen
 vect** init_directions(vect2 view) {
-    view.psi -= VIEW_HEIGHT/2;
-    vect down = angles_to_vect(view);
+    view.psi -= VIEW_HEIGHT/2.0f;
+    vect screen_down = angles_to_vect(view);
     view.psi += VIEW_HEIGHT;
-    vect up = angles_to_vect(view);
-    view.psi -= VIEW_HEIGHT/2;
-    view.phi -= VIEW_WIDTH/2;
-    vect left = angles_to_vect(view);
+    vect screen_up   = angles_to_vect(view);
+    view.psi -= VIEW_HEIGHT/2.0f;
+    view.phi -= VIEW_WIDTH/2.0f;
+    vect screen_left  = angles_to_vect(view);
     view.phi += VIEW_WIDTH;
-    vect right = angles_to_vect(view);
-    view.phi -= VIEW_WIDTH/2;
-    vect mid_vert = vect_scale(0.5, vect_add(up, down));
-    vect mid_hor = vect_scale(0.5, vect_add(left, right));
-    vect to_left = vect_sub(left, mid_hor);
-    vect to_up = vect_sub(up, mid_vert);
+    vect screen_right = angles_to_vect(view);
+    view.phi -= VIEW_WIDTH/2.0f;
 
-    vect** dirs = malloc(Y_PIXELS * sizeof(vect*));
+    vect screen_mid_vert = vect_scale(0.5f, vect_add(screen_up,   screen_down));
+    vect screen_mid_hor  = vect_scale(0.5f, vect_add(screen_left, screen_right));
+    vect mid_to_left = vect_sub(screen_left,  screen_mid_hor);
+    vect mid_to_up   = vect_sub(screen_up,    screen_mid_vert);
+
+    vect** dir = malloc(sizeof(vect*) * Y_PIXELS);
+    if (!dir) { perror("Failed to allocate directions"); exit(EXIT_FAILURE); }
+    for (int i = 0; i < Y_PIXELS; i++) {
+        dir[i] = malloc(sizeof(vect) * X_PIXELS);
+        if (!dir[i]) { perror("Failed to allocate directions row"); exit(EXIT_FAILURE); }
+    }
     for (int y = 0; y < Y_PIXELS; y++) {
-        dirs[y] = malloc(X_PIXELS * sizeof(vect));
         for (int x = 0; x < X_PIXELS; x++) {
-            vect ray = vect_sub(
-                vect_sub(vect_add(mid_hor, to_left), vect_scale((float)x/(X_PIXELS-1)*2, to_left)),
-                vect_scale((float)y/(Y_PIXELS-1)*2, to_up)
-            );
-            vect_normalize(&ray);
-            dirs[y][x] = ray;
+            vect tmp = vect_add(vect_add(screen_mid_hor, mid_to_left), mid_to_up);
+            tmp = vect_sub(tmp, vect_scale(((float)x/(X_PIXELS-1))*2, mid_to_left));
+            tmp = vect_sub(tmp, vect_scale(((float)y/(Y_PIXELS-1))*2, mid_to_up));
+            vect_normalize(&tmp);
+            dir[y][x] = tmp;
         }
     }
-    return dirs;
+    return dir;
 }
 
-// check if a point leaves the world
-int ray_outside(vect p) {
-    return p.x<0||p.x>=X_BLOCKS||p.y<0||p.y>=Y_BLOCKS||p.z<0||p.z>=Z_BLOCKS;
+// This function checks if a 3D point pos is outside the allowed block boundaries.
+int ray_outside(vect pos) {
+    return (pos.x<0||pos.x>=X_BLOCKS ||
+            pos.y<0||pos.y>=Y_BLOCKS ||
+            pos.z<0||pos.z>=Z_BLOCKS);
 }
 
-// check if position is on block border
-int on_block_border(vect p) {
-    int cnt=0;
-    if (fabs(p.x - round(p.x)) < BLOCK_BORDER_SIZE) cnt++;
-    if (fabs(p.y - round(p.y)) < BLOCK_BORDER_SIZE) cnt++;
-    if (fabs(p.z - round(p.z)) < BLOCK_BORDER_SIZE) cnt++;
-    return cnt>=2;
+// This function checks if a position lies on the border between two or more blocks.
+int on_block_border(vect pos) {
+    int cnt = 0;
+    if (fabsf(pos.x - roundf(pos.x)) < BLOCK_BORDER_SIZE) cnt++;
+    if (fabsf(pos.y - roundf(pos.y)) < BLOCK_BORDER_SIZE) cnt++;
+    if (fabsf(pos.z - roundf(pos.z)) < BLOCK_BORDER_SIZE) cnt++;
+    return (cnt >= 2);
 }
 
-// simple min
-float minf(float a,float b){return a<b?a:b;}
+float minf(float a, float b) { return a < b ? a : b; }
 
-// trace a ray until it hits a block or leaves
-char raytrace(vect pos,vect dir,char*** blocks) {
+/*
+    it's a classic voxel ray traversal algorithm, used in things like 
+    Minecraft-style rendering or ray marching in a voxel grid.
+*/
+char raytrace(vect pos, vect dir, char*** blocks) {
     const float eps = 0.01f;
-    while(!ray_outside(pos)){
-        int x=(int)pos.x,y=(int)pos.y,z=(int)pos.z;
-        if(z>=0&&z<Z_BLOCKS&&y>=0&&y<Y_BLOCKS&&x>=0&&x<X_BLOCKS){
-            char c=blocks[z][y][x];
-            if(c!=' '){ return on_block_border(pos)?'-':c; }
+    while (!ray_outside(pos)) {
+        int x = (int)pos.x, y = (int)pos.y, z = (int)pos.z;
+        if (z<0||z>=Z_BLOCKS||y<0||y>=Y_BLOCKS||x<0||x>=X_BLOCKS) break;
+        char c = blocks[z][y][x];
+        if (c != ' ') {
+            return on_block_border(pos) ? '-' : c;
         }
-        float dist=2;
-        if(dir.x>eps) dist=minf(dist,((int)(pos.x+1)-pos.x)/dir.x);
-        else if(dir.x<-eps) dist=minf(dist,((int)pos.x-pos.x)/dir.x);
-        if(dir.y>eps) dist=minf(dist,((int)(pos.y+1)-pos.y)/dir.y);
-        else if(dir.y<-eps) dist=minf(dist,((int)pos.y-pos.y)/dir.y);
-        if(dir.z>eps) dist=minf(dist,((int)(pos.z+1)-pos.z)/dir.z);
-        else if(dir.z<-eps) dist=minf(dist,((int)pos.z-pos.z)/dir.z);
-        pos=vect_add(pos,vect_scale(dist+eps,dir));
+        float dist = 2;
+        if      (dir.x > eps)  dist = minf(dist, ((int)(pos.x+1)-pos.x)/dir.x);
+        else if (dir.x < -eps) dist = minf(dist, ((int)pos.x -pos.x)/dir.x);
+        if      (dir.y > eps)  dist = minf(dist, ((int)(pos.y+1)-pos.y)/dir.y);
+        else if (dir.y < -eps) dist = minf(dist, ((int)pos.y -pos.y)/dir.y);
+        if      (dir.z > eps)  dist = minf(dist, ((int)(pos.z+1)-pos.z)/dir.z);
+        else if (dir.z < -eps) dist = minf(dist, ((int)pos.z -pos.z)/dir.z);
+
+        pos = vect_add(pos, vect_scale(dist+eps, dir));
     }
     return ' ';
 }
 
-// fill picture buffer by raytracing every pixel
-void get_picture(char** pic, player_pos_view pv, char*** blocks){
-    vect** dirs = init_directions(pv.view);
-    for(int y=0;y<Y_PIXELS;y++)for(int x=0;x<X_PIXELS;x++)
-        pic[y][x] = raytrace(pv.pos, dirs[y][x], blocks);
-    for(int y=0;y<Y_PIXELS;y++) free(dirs[y]);
-    free(dirs);
+/*
+    part of the ASCII raytracer pipeline that takes the player's position and view, 
+    traces rays into the 3D world, and fills in a 2D ASCII picture.
+*/
+void get_picture(char** picture, player_pos_view posview, char*** blocks) {
+    vect** directions = init_directions(posview.view);
+    for (int y = 0; y < Y_PIXELS; y++) {
+        for (int x = 0; x < X_PIXELS; x++) {
+            picture[y][x] = raytrace(posview.pos, directions[y][x], blocks);
+        }
+    }
+    for (int i = 0; i < Y_PIXELS; i++) free(directions[i]);
+    free(directions);
 }
 
-// render ASCII frame to console
-void draw_ascii(char** pic){
+void draw_ascii(char** picture) {
+    fflush(stdout);
+    // ANSI: move cursor to 0,0
     printf("\033[0;0H");
-    for(int y=0;y<Y_PIXELS;y++){
-        int cur=0;
-        for(int x=0;x<X_PIXELS;x++){
-            if(pic[y][x]=='o'&&cur!=32){printf("\x1B[32m");cur=32;} 
-            else if(pic[y][x]!='o'&&cur!=0){printf("\x1B[0m");cur=0;}
-            putchar(pic[y][x]);
+    for (int i = 0; i < Y_PIXELS; i++) {
+        int current_color = 0;
+        for (int j = 0; j < X_PIXELS; j++) {
+            if (picture[i][j] == 'o' && current_color != 32) {
+                printf("\x1B[32m"); current_color = 32;
+            } else if (picture[i][j] != 'o' && current_color != 0) {
+                printf("\x1B[0m");  current_color = 0;
+            }
+            putchar(picture[i][j]);
         }
         printf("\x1B[0m\n");
     }
 }
 
-// update player based on input and collision
-void update_pos_view(player_pos_view* pv,char*** blocks){
-    float move=0.3f,rot=0.1f;
-    int x=(int)pv->pos.x,y=(int)pv->pos.y,z=(int)(pv->pos.z-EYE_HEIGHT+0.01f);
-    if(x>=0&&x<X_BLOCKS&&y>=0&&y<Y_BLOCKS&&z>=0&&z<Z_BLOCKS&&blocks[z][y][x]!=' ')pv->pos.z+=1;
-    z=(int)(pv->pos.z-EYE_HEIGHT-0.01f);
-    if(x>=0&&x<X_BLOCKS&&y>=0&&y<Y_BLOCKS&&z>=0&&z<Z_BLOCKS&&blocks[z][y][x]==' ')pv->pos.z-=1;
-    if(is_key_pressed('w')) pv->view.psi+=rot;
-    if(is_key_pressed('s')) pv->view.psi-=rot;
-    if(is_key_pressed('d')) pv->view.phi+=rot;
-    if(is_key_pressed('a')) pv->view.phi-=rot;
-    if(pv->view.psi>M_PI/2)pv->view.psi=M_PI/2;
-    if(pv->view.psi<-M_PI/2)pv->view.psi=-M_PI/2;
-    vect dir=angles_to_vect(pv->view);
-    if(is_key_pressed('i')){pv->pos.x+=move*dir.x;pv->pos.y+=move*dir.y;}
-    if(is_key_pressed('k')){pv->pos.x-=move*dir.x;pv->pos.y-=move*dir.y;}
-    if(is_key_pressed('j')){pv->pos.x+=move*dir.y;pv->pos.y-=move*dir.x;}
-    if(is_key_pressed('l')){pv->pos.x-=move*dir.y;pv->pos.y+=move*dir.x;}
-    if(pv->pos.x<0)pv->pos.x=0; if(pv->pos.x>=X_BLOCKS)pv->pos.x=X_BLOCKS-0.01f;
-    if(pv->pos.y<0)pv->pos.y=0; if(pv->pos.y>=Y_BLOCKS)pv->pos.y=Y_BLOCKS-0.01f;
-    if(pv->pos.z<EYE_HEIGHT)pv->pos.z=EYE_HEIGHT; if(pv->pos.z>=Z_BLOCKS)pv->pos.z=Z_BLOCKS-0.01f;
+// Function to update the player's position and viewing direction based on input
+void update_pos_view(player_pos_view* posview, char*** blocks) {
+    float move_eps = 0.30f;  // Movement speed
+    float tilt_eps = 0.1f;   // Rotation speed
+
+    int x = (int)posview->pos.x;
+    int y = (int)posview->pos.y;
+    int z = (int)(posview->pos.z - EYE_HEIGHT + 0.01f);
+
+    // Push up/down to avoid embedding/floating
+    if (x>=0&&x<X_BLOCKS&&y>=0&&y<Y_BLOCKS&&z>=0&&z<Z_BLOCKS && blocks[z][y][x] != ' ')
+        posview->pos.z += 1;
+    z = (int)(posview->pos.z - EYE_HEIGHT - 0.01f);
+    if (x>=0&&x<X_BLOCKS&&y>=0&&y<Y_BLOCKS&&z>=0&&z<Z_BLOCKS && blocks[z][y][x] == ' ')
+        posview->pos.z -= 1;
+
+    // rotation
+    if (is_key_pressed('w')) posview->view.psi += tilt_eps;
+    if (is_key_pressed('s')) posview->view.psi -= tilt_eps;
+    if (is_key_pressed('d')) posview->view.phi += tilt_eps;
+    if (is_key_pressed('a')) posview->view.phi -= tilt_eps;
+    // clamp pitch
+    if (posview->view.psi >  M_PI/2) posview->view.psi =  M_PI/2;
+    if (posview->view.psi < -M_PI/2) posview->view.psi = -M_PI/2;
+
+    vect direction = angles_to_vect(posview->view);
+    // movement
+    if (is_key_pressed('i')) {
+        posview->pos.x += move_eps * direction.x;
+        posview->pos.y += move_eps * direction.y;
+    }
+    if (is_key_pressed('k')) {
+        posview->pos.x -= move_eps * direction.x;
+        posview->pos.y -= move_eps * direction.y;
+    }
+    if (is_key_pressed('j')) {
+        posview->pos.x += move_eps * direction.y;
+        posview->pos.y -= move_eps * direction.x;
+    }
+    if (is_key_pressed('l')) {
+        posview->pos.x -= move_eps * direction.y;
+        posview->pos.y += move_eps * direction.x;
+    }
+
+    // clamp to world
+    if (posview->pos.x < 0) posview->pos.x = 0;
+    if (posview->pos.x >= X_BLOCKS) posview->pos.x = X_BLOCKS - 0.01f;
+    if (posview->pos.y < 0) posview->pos.y = 0;
+    if (posview->pos.y >= Y_BLOCKS) posview->pos.y = Y_BLOCKS - 0.01f;
+    if (posview->pos.z < EYE_HEIGHT) posview->pos.z = EYE_HEIGHT;
+    if (posview->pos.z >= Z_BLOCKS) posview->pos.z = Z_BLOCKS - 0.01f;
 }
 
-// cast a ray until a block is found, return hit position
-vect get_current_block(player_pos_view pv,char*** blocks){
-    vect pos=pv.pos; vect dir=angles_to_vect(pv.view); float eps=0.01f;
-    while(!ray_outside(pos)){
-        int x=(int)pos.x,y=(int)pos.y,z=(int)pos.z;
-        if(z>=0&&z<Z_BLOCKS&&y>=0&&y<Y_BLOCKS&&x>=0&&x<X_BLOCKS&&blocks[z][y][x]!=' ')return pos;
-        float dist=2;
-        if(dir.x>eps)dist=minf(dist,((int)(pos.x+1)-pos.x)/dir.x);
-        else if(dir.x<-eps)dist=minf(dist,((int)pos.x-pos.x)/dir.x);
-        if(dir.y>eps)dist=minf(dist,((int)(pos.y+1)-pos.y)/dir.y);
-        else if(dir.y<-eps)dist=minf(dist,((int)pos.y-pos.y)/dir.y);
-        if(dir.z>eps)dist=minf(dist,((int)(pos.z+1)-pos.z)/dir.z);
-        else if(dir.z<-eps)dist=minf(dist,((int)pos.z-pos.z)/dir.z);
-        pos=vect_add(pos,vect_scale(dist+eps,dir));
+// Raycast to find the first non-empty block in view
+vect get_current_block(player_pos_view posview, char*** blocks) {
+    vect pos = posview.pos;
+    vect dir = angles_to_vect(posview.view);
+    const float eps = 0.01f;
+
+    while (!ray_outside(pos)) {
+        int x = (int)pos.x, y = (int)pos.y, z = (int)pos.z;
+        if (z<0||z>=Z_BLOCKS||y<0||y>=Y_BLOCKS||x<0||x>=X_BLOCKS) break;
+        if (blocks[z][y][x] != ' ')
+            return pos;
+        float dist = 2;
+        if      (dir.x > eps)  dist = minf(dist, ((int)(pos.x+1)-pos.x)/dir.x);
+        else if (dir.x < -eps) dist = minf(dist, ((int)pos.x -pos.x)/dir.x);
+        if      (dir.y > eps)  dist = minf(dist, ((int)(pos.y+1)-pos.y)/dir.y);
+        else if (dir.y < -eps) dist = minf(dist, ((int)pos.y -pos.y)/dir.y);
+        if      (dir.z > eps)  dist = minf(dist, ((int)(pos.z+1)-pos.z)/dir.z);
+        else if (dir.z < -eps) dist = minf(dist, ((int)pos.z -pos.z)/dir.z);
+
+        pos = vect_add(pos, vect_scale(dist+eps, dir));
     }
     return pos;
 }
 
-// place a new block adjacent to the looked-at block
-void place_block(vect pos,char*** blocks,char block) {
-    int x=(int)pos.x,y=(int)pos.y,z=(int)pos.z;
-    if(x<0||x>=X_BLOCKS||y<0||y>=Y_BLOCKS||z<0||z>=Z_BLOCKS) return;
-    float d[6] = {fabs(x+1-pos.x),fabs(pos.x-x),fabs(y+1-pos.y),fabs(pos.y-y),fabs(z+1-pos.z),fabs(pos.z-z)};
-    int mi=0; for(int i=1;i<6;i++) if(d[i]<d[mi])mi=i;
-    switch(mi){case 0: if(x+1<X_BLOCKS) blocks[z][y][x+1]=block;break;
-                case 1: if(x-1>=0)      blocks[z][y][x-1]=block;break;
-                case 2: if(y+1<Y_BLOCKS)blocks[z][y+1][x]=block;break;
-                case 3: if(y-1>=0)      blocks[z][y-1][x]=block;break;
-                case 4: if(z+1<Z_BLOCKS)blocks[z+1][y][x]=block;break;
-                case 5: if(z-1>=0)      blocks[z-1][y][x]=block;break;}
+// Place a block adjacent to the looked-at block
+void place_block(vect pos, char*** blocks, char block) {
+    int x = (int)pos.x, y = (int)pos.y, z = (int)pos.z;
+    if (z<0||z>=Z_BLOCKS||y<0||y>=Y_BLOCKS||x<0||x>=X_BLOCKS) return;
+
+    float dists[6] = {
+        fabsf(x+1 - pos.x),  fabsf(pos.x - x),
+        fabsf(y+1 - pos.y),  fabsf(pos.y - y),
+        fabsf(z+1 - pos.z),  fabsf(pos.z - z)
+    };
+    int min_idx = 0; float mind = dists[0];
+    for (int i = 1; i < 6; i++) {
+        if (dists[i] < mind) { mind = dists[i]; min_idx = i; }
+    }
+    switch (min_idx) {
+        case 0: if (x+1 < X_BLOCKS) blocks[z][y][x+1] = block; break;
+        case 1: if (x-1 >= 0)      blocks[z][y][x-1] = block; break;
+        case 2: if (y+1 < Y_BLOCKS) blocks[z][y+1][x] = block; break;
+        case 3: if (y-1 >= 0)      blocks[z][y-1][x] = block; break;
+        case 4: if (z+1 < Z_BLOCKS) blocks[z+1][y][x] = block; break;
+        case 5: if (z-1 >= 0)      blocks[z-1][y][x] = block; break;
+    }
 }
 
 int main() {
-    init_terminal();
-    char** picture = init_picture();
-    char*** blocks  = init_blocks();
-    for(int z=0;z<4;z++) for(int y=0;y<Y_BLOCKS;y++) for(int x=0;x<X_BLOCKS;x++)
-        blocks[z][y][x]='@';
-    player_pos_view pv = init_posview();
-    while(1) {
-        process_input(); if(is_key_pressed('q')) break;
-        update_pos_view(&pv,blocks);
-        vect cb = get_current_block(pv,blocks);
-        int have = !ray_outside(cb);
-        char saved=' '; int removed=0;
-        if(have) {
-            int cx=(int)cb.x,cy=(int)cb.y,cz=(int)cb.z;
-            saved=blocks[cz][cy][cx]; blocks[cz][cy][cx]='o';
-            if(is_key_pressed('x')) {removed=1; blocks[cz][cy][cx]=' ';}
-            if(is_key_pressed(' ')) place_block(cb,blocks,'@');
+    init_terminal();                         // Prepare terminal for drawing
+    char** picture = init_picture();         // Create 2D array for ASCII rendering
+    char*** blocks  = init_blocks();         // Initialize 3D block world
+
+    // Create a flat ground of blocks ('@') in the lower levels
+    for (int x = 0; x < X_BLOCKS; x++)
+    for (int y = 0; y < Y_BLOCKS; y++)
+    for (int z = 0; z < 4; z++)
+        blocks[z][y][x] = '@';
+
+    player_pos_view posview = init_posview(); // Initialize player position and view
+
+    while (1) {
+        process_input();                      // Read user input
+
+        if (is_key_pressed('q')) break;      // Quit if 'q' is pressed
+
+        update_pos_view(&posview, blocks);   // Move/rotate player
+
+        vect current_block = get_current_block(posview, blocks);
+        int have_current_block = !ray_outside(current_block);
+        int cx = (int)current_block.x,
+            cy = (int)current_block.y,
+            cz = (int)current_block.z;
+        char old_c = ' ', removed = 0;
+
+        if (have_current_block &&
+            cz>=0&&cz<Z_BLOCKS&&cy>=0&&cy<Y_BLOCKS&&cx>=0&&cx<X_BLOCKS) {
+            old_c = blocks[cz][cy][cx];
+            blocks[cz][cy][cx] = 'o';
+            if (is_key_pressed('x')) {
+                removed = 1;
+                blocks[cz][cy][cx] = ' ';
+            }
+            if (is_key_pressed(' ')) {
+                place_block(current_block, blocks, '@');
+            }
         }
-        get_picture(picture,pv,blocks);
-        if(have && !removed) {
-            int cx=(int)cb.x,cy=(int)cb.y,cz=(int)cb.z;
-            blocks[cz][cy][cx]=saved;
+
+        get_picture(picture, posview, blocks);
+
+        // Restore the original character if block wasn’t removed
+        if (have_current_block && !removed &&
+            cz>=0&&cz<Z_BLOCKS&&cy>=0&&cy<Y_BLOCKS&&cx>=0&&cx<X_BLOCKS) {
+            blocks[cz][cy][cx] = old_c;
         }
-        draw_ascii(picture);
-#ifdef _WIN32
-        Sleep(20);
-#else
-        usleep(20000);
-#endif
+
+        draw_ascii(picture);       // Render the ASCII screen
+        Sleep(20);                 // Sleep for 20 ms (~50 FPS)
     }
-    for(int i=0;i<Y_PIXELS;i++) free(picture[i]); free(picture);
-    for(int z=0;z<Z_BLOCKS;z++){ for(int y=0;y<Y_BLOCKS;y++) free(blocks[z][y]); free(blocks[z]); }
+
+    // Free allocated memory
+    for (int i = 0; i < Y_PIXELS; i++) free(picture[i]);
+    free(picture);
+    for (int z = 0; z < Z_BLOCKS; z++) {
+        for (int y = 0; y < Y_BLOCKS; y++) free(blocks[z][y]);
+        free(blocks[z]);
+    }
     free(blocks);
-    restore_terminal();
+
+    restore_terminal();           // Reset terminal on exit
     return 0;
 }
