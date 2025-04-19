@@ -1,0 +1,48 @@
+1. Terminal setup
+    init_terminal()
+        sets terminal to non-canonical mode
+        disabls echo and enables blocking input
+2. data structures initialisation
+    init_picture()
+        allocates a 2d array for the screen pixels
+    
+    init_blocks()
+        initialises a 3d world grid with empty blocks ('' )
+    
+    init_posview()
+        sets initial player position and view angles
+
+3. main loop
+    game loop starts doing the following every grame
+
+4. input handling
+    process_input()
+        reads all the pressed keys and stores them in keystate
+    
+    is_key_pressed()
+        checks if a key was pressed during process_innput()
+    
+5. player movement and view update
+    update_pos_view()
+        adjusts player position and view angles based on key inputs(WASD, IJKL, etc)
+        handles basic gravity/upward motion simulation if standing on or above blocks
+
+6. raycastiing and scene calculation
+    init_directions(view)
+        for every pixel, calculates a ray direction based on current update_pos_view
+    
+    rayrace(pos, dir, blocks)
+        sends a ray through the 3d block world
+        returns the character of the first bloack hit
+    
+    get_picture(picture, posview, blocks)
+        fills the 2d picture array by raytracing for every pixel
+
+7. rendering
+    draw_ascii(picture)
+        prints the picture array yp the terminal using ANSI codes
+        applies simple coloring for different block types
+
+8. cleanup
+        restore_terminal()
+        restores terminal settings when exiting the program
