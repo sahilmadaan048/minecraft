@@ -1,4 +1,4 @@
-# 🐼 Minecraft-style Raycasting Engine in C++ using SDL2
+# 🐼 Minecraft-style Raycasting Engine in C using SDL2
 
 This project is a simple **3D raycasting engine** inspired by *Minecraft-style blocky visuals*, written in **C**. It renders a 3D world based on a 2D map and supports basic player movement and camera control.
 
