@@ -66,8 +66,8 @@ These controls allow full movement and camera orientation within the 3D-rendered
 
 _Replace these with real gameplay images:_
 
-![Screenshot 1](images/1.png)
-![Screenshot 2](images/2.png)
+![Screenshot 1](./images/screenshot1.png)
+![Screenshot 2](./images/screenshot2.png)
 
 ---
 
