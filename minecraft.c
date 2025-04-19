@@ -1,11 +1,11 @@
-#include <windows.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <termios.h>
 #include <stdlib.h>
 #include <math.h>
-#include <conio.h>  // For _kbhit() and _getch()
-
-#define Y_PIXELS 120
+#define Y_PIXELS 180
 #define X_PIXELS 900
 #define Z_BLOCKS 10
 #define Y_BLOCKS 20
@@ -15,9 +15,7 @@
 #define VIEW_WIDTH 1
 #define BLOCK_BORDER_SIZE 0.05
 
-// Windows console handle
-static HANDLE hConsole = INVALID_HANDLE_VALUE;
-static DWORD oldConsoleMode;
+static struct termios old_termios, new_termios;
 
 // vect represents a 3D vector in cartesian coordinate system
 typedef struct Vector {
@@ -38,102 +36,98 @@ typedef struct Vector_vector2 {
     vect2 view;
 } player_pos_view;
 
+
 void init_terminal() {
-    // Get console handle
-    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    
-    // Save old console mode
-    GetConsoleMode(hConsole, &oldConsoleMode);
-    
-    // Set new console mode - disable line input and echo
-    DWORD newConsoleMode = oldConsoleMode;
-    newConsoleMode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
-    newConsoleMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    SetConsoleMode(hConsole, newConsoleMode);
-    
-    // Clear screen and hide cursor
-    printf("\033[2J\033[?25l");
+    //to store the old terminal settings and store them in old_termios
+    tcgetattr(STDIN_FILENO, &old_termios);
+
+    //create a copy of the current settings to modify
+    new_termios = old_termios;
+
+    //disables the canonical mode and echo
+    /*
+        diabling canonical mode will ensure that we are able to input character by character without the need to press ENTER each time
+
+        disabling the echo mode means that the character input wont get printed on the terminal each time yoi press a key
+    */
+    new_termios.c_lflag &= ~(ICANON | ECHO);
+
+    //applies the modified terminal settings immediately
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
+
+    //sets the stdin file descrioptor to non-blocking mode
+    fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK);
+
+    //rnsures that all output gets flushed ti the terminal screen for consistent behaviour
     fflush(stdout);
 }
 
 void restore_terminal() {
-    // Restore old console mode
-    SetConsoleMode(hConsole, oldConsoleMode);
-    
-    // Show cursor again
-    printf("\033[?25h");
+    //restores the old terminal settings stored in the old_termios variable
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
     printf("terminal restored");
 }
 
-// To cover all possible ASCII values
+//to cover all possible ASCII values
 static char keystate[256] = { 0 };
 
 void process_input() {
-    // Reset all key states first
+    char c;
     for (int i = 0; i < 256; i++) {
         keystate[i] = 0;
     }
 
-    // Check for key presses without blocking
-    while (_kbhit()) {
-        int ch = _getch();
-        if (ch == 0 || ch == 0xE0) {  // Handle extended keys
-            ch = _getch();  // Get the actual key code
-            // Map extended keys to our key codes
-            switch (ch) {
-                case 72: keystate['w'] = 1; break;  // Up arrow -> 'w'
-                case 80: keystate['s'] = 1; break;  // Down arrow -> 's'
-                case 75: keystate['a'] = 1; break;  // Left arrow -> 'a'
-                case 77: keystate['d'] = 1; break;  // Right arrow -> 'd'
-            }
-        } else {
-            if (ch >= 0 && ch < 256) {
-                keystate[ch] = 1;
-            }
-        }
+    //reading input from the terminal byte by byte and stores it in the variable c
+    while (read(STDIN_FILENO, &c, 1) > 0) {
+        // printf("\ninput: %c", c);
+        //get the ASCII for the input character
+        unsigned char uc = (unsigned char)c;
+
+        //kinda making a visited array to register a key with this ASCII 'uc' begin pressed
+        keystate[uc] = 1;
     }
 }
 
-// Check if the key is pressed
+//check if the key is pressed
 int is_key_pressed(char key) {
     return keystate[(unsigned char)key];
 }
 
-// Initialise a image in the program by creating a image buffer
-// Make an array of size Y_PIXELS, each storing an array of characters of size X_PIXELS
+//initialise a image in the program by creating a image buffer
+//make an array of size Y_PIXELS, each storing an array of characters of size X_PIXELS
 char** init_picture() {
     char** picture = malloc(sizeof(char*) * Y_PIXELS);
     if (picture == NULL) {
-        fprintf(stderr, "Failed to allocate picture\n");
+        perror("Failed to allocate picture");
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < Y_PIXELS; i++) {
         picture[i] = malloc(sizeof(char) * X_PIXELS);
         if (picture[i] == NULL) {
-            fprintf(stderr, "Failed to allocate picture row\n");
+            perror("Failed to allocate picture row");
             exit(EXIT_FAILURE);
         }
     }
     return picture;
 }
 
-// Make/initialise a grid based block for the game
+//make/initialise a grid based block for the game
 char*** init_blocks() {
     char*** blocks = malloc(sizeof(char**) * Z_BLOCKS);
     if (blocks == NULL) {
-        fprintf(stderr, "Failed to allocate blocks\n");
+        perror("Failed to allocate blocks");
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < Z_BLOCKS; i++) {
         blocks[i] = malloc(sizeof(char*) * Y_BLOCKS);
         if (blocks[i] == NULL) {
-            fprintf(stderr, "Failed to allocate blocks layer\n");
+            perror("Failed to allocate blocks layer");
             exit(EXIT_FAILURE);
         }
         for (int j = 0; j < Y_BLOCKS; j++) {
             blocks[i][j] = malloc(sizeof(char) * X_BLOCKS);
             if (blocks[i][j] == NULL) {
-                fprintf(stderr, "Failed to allocate blocks row\n");
+                perror("Failed to allocate blocks row");
                 exit(EXIT_FAILURE);
             }
             for (int k = 0; k < X_BLOCKS; k++) {
@@ -144,7 +138,7 @@ char*** init_blocks() {
     return blocks;
 }
 
-// Initializes and returns the starting position and viewing angles of the player in the game
+// initializes and returns the starting position and viewing angles of the player in the game
 player_pos_view init_posview() {
     player_pos_view posview;
     posview.pos.x = 5;
@@ -155,7 +149,7 @@ player_pos_view init_posview() {
     return posview;
 }
 
-// Convert the posview angles into vect
+//convert the posview angles into vect
 vect angles_to_vect(vect2 angles) {
     vect res;
     res.x = cos(angles.psi) * cos(angles.phi);
@@ -164,7 +158,7 @@ vect angles_to_vect(vect2 angles) {
     return res;
 }
 
-// Vector addition code
+//vector addition code
 vect vect_add(vect v1, vect v2) {
     vect res;
     res.x = v1.x + v2.x;
@@ -173,19 +167,19 @@ vect vect_add(vect v1, vect v2) {
     return res;
 }
 
-// Scalar multiplication of a vector v with constant a
+//scalar multiplication of a vectior v with constant a
 vect vect_scale(float s, vect v) {
     vect res = { s * v.x, s * v.y, s * v.z };
     return res;
 }
 
-// Vector subtraction code
+//vector subtraction code
 vect vect_sub(vect v1, vect v2) {
     vect v3 = vect_scale(-1, v2);
     return vect_add(v1, v3);
 }
 
-// Finding the unit vector for the vector
+//finding the unit vector for the vector
 void vect_normalize(vect* v) {
     float len = sqrt(v->x * v->x + v->y * v->y + v->z * v->z);
     if (len > 0) {
@@ -195,7 +189,8 @@ void vect_normalize(vect* v) {
     }
 }
 
-// Initializes a 2D array of direction vectors for each pixel on a screen, based on a given camera/view orientation (vect2 view)
+//initializes a 2D array of direction vectors for each pixel on a screen, based on a given camera/view orientation (vect2 view)
+//chatgpt'ed this logic cus it was taking too long
 vect** init_directions(vect2 view) {
     view.psi -= VIEW_HEIGHT / 2.0;
     vect screen_down = angles_to_vect(view);
@@ -219,14 +214,14 @@ vect** init_directions(vect2 view) {
 
     vect** dir = malloc(sizeof(vect*) * Y_PIXELS);
     if (dir == NULL) {
-        fprintf(stderr, "Failed to allocate directions\n");
+        perror("Failed to allocate directions");
         exit(EXIT_FAILURE);
     }
 
     for (int i = 0; i < Y_PIXELS; i++) {
         dir[i] = malloc(sizeof(vect) * X_PIXELS);
         if (dir[i] == NULL) {
-            fprintf(stderr, "Failed to allocate directions row\n");
+            perror("Failed to allocate directions row");
             exit(EXIT_FAILURE);
         }
     }
@@ -252,7 +247,7 @@ int ray_outside(vect pos) {
     return 0;
 }
 
-// This function checks if a position lies on the border between two or more blocks.
+//This function checks if a position lies on the border between two or more blocks.
 int on_block_border(vect pos) {
     int cnt = 0;
     if (fabsf(pos.x - roundf(pos.x)) < BLOCK_BORDER_SIZE) {
@@ -272,8 +267,14 @@ int on_block_border(vect pos) {
     return 0;
 }
 
+float min(float a, float b) {
+    if (a < b)
+        return a;
+    return b;
+}
+
 /*
-    It's a classic voxel ray traversal algorithm, used in things like 
+    it's a classic voxel ray traversal algorithm, used in things like 
     Minecraft-style rendering or ray marching in a voxel grid.
 */
 char raytrace(vect pos, vect dir, char*** blocks) {
@@ -322,7 +323,7 @@ char raytrace(vect pos, vect dir, char*** blocks) {
 }
 
 /*
-    Part of the ASCII raytracer pipeline that takes the player's position and view, 
+    part of the ASCII raytracer pipeline that takes the player's position and view, 
     traces rays into the 3D world, and fills in a 2D ASCII picture.
 */
 void get_picture(char** picture, player_pos_view posview, char*** blocks) {
@@ -341,51 +342,27 @@ void get_picture(char** picture, player_pos_view posview, char*** blocks) {
 }
 
 /*
-    Performs ray tracing in a 3D voxel grid (blocks) to determine
+    performs ray tracing in a 3D voxel grid (blocks) to determine
     what the ray hits first when cast from a point pos in direction dir
 */
 void draw_ascii(char** picture) {
     fflush(stdout);
-    printf("\033[0;0H");  // Move cursor to top-left corner
-    
-    // Buffer to hold the entire frame to reduce flickering
-    char* buffer = malloc((X_PIXELS + 1) * Y_PIXELS + 1);
-    if (buffer == NULL) {
-        fprintf(stderr, "Failed to allocate draw buffer\n");
-        return;
-    }
-    
-    int pos = 0;
+    printf("\033[0;0H");
     for (int i = 0; i < Y_PIXELS; i++) {
         int current_color = 0;
         for (int j = 0; j < X_PIXELS; j++) {
             if (picture[i][j] == 'o' && current_color != 32) {
-                // Add ANSI color code for green
-                memcpy(buffer + pos, "\x1B[32m", 5);
-                pos += 5;
+                printf("\x1B[32m");
                 current_color = 32;
             }
             else if (picture[i][j] != 'o' && current_color != 0) {
-                // Add ANSI reset code
-                memcpy(buffer + pos, "\x1B[0m", 4);
-                pos += 4;
+                printf("\x1B[0m");
                 current_color = 0;
             }
-            buffer[pos++] = picture[i][j];
+            printf("%c", picture[i][j]);
         }
-        // Reset color at end of line and add newline
-        if (current_color != 0) {
-            memcpy(buffer + pos, "\x1B[0m\n", 5);
-            pos += 5;
-        } else {
-            buffer[pos++] = '\n';
-        }
+        printf("\x1B[0m\n");
     }
-    buffer[pos] = '\0';
-    
-    // Write the entire frame at once
-    printf("%s", buffer);
-    free(buffer);
 }
 
 // Function to update the player's position and viewing direction based on input
@@ -546,15 +523,9 @@ void place_block(vect pos, char*** blocks, char block) {
 
 // Main game loop and setup
 int main() {
-    // Set console title
-    SetConsoleTitle("Minecraft ASCII Raytracer");
-    
-    // Initialize console
-    init_terminal();
-    
-    // Create rendering buffers
-    char** picture = init_picture();
-    char*** blocks = init_blocks();
+    init_terminal();                         // Prepare terminal for drawing
+    char** picture = init_picture();         // Create 2D array for ASCII rendering
+    char*** blocks = init_blocks();          // Initialize 3D block world
 
     // Create a flat ground of blocks ('@') in the lower levels
     for (int x = 0; x < X_BLOCKS; x++) {
@@ -565,16 +536,14 @@ int main() {
         }
     }
 
-    // Initialize player position and view
-    player_pos_view posview = init_posview();
+    player_pos_view posview = init_posview(); // Initialize player position and view
 
-    // Main game loop
     while (1) {
-        process_input();  // Read user input (key states)
+        process_input();                      // Read user input (key states)
 
-        if (is_key_pressed('q')) break;  // Quit if 'q' is pressed
+        if (is_key_pressed('q')) break;      // Quit if 'q' is pressed
 
-        update_pos_view(&posview, blocks);  // Move/rotate player based on input
+        update_pos_view(&posview, blocks);    // Move/rotate player based on input
 
         vect current_block = get_current_block(posview, blocks); // Block being looked at
         int have_current_block = !ray_outside(current_block);
@@ -620,8 +589,8 @@ int main() {
             }
         }
 
-        draw_ascii(picture);  // Render the ASCII screen
-        Sleep(5);            // Sleep for 20 ms to limit frame rate (~50 FPS)
+        draw_ascii(picture);       // Render the ASCII screen
+        usleep(20000);             // Sleep for 20 ms to limit frame rate (~50 FPS)
     }
 
     // Free allocated memory
@@ -638,7 +607,6 @@ int main() {
     }
     free(blocks);
 
-    // Restore terminal settings
-    restore_terminal();
+    restore_terminal();           // Reset terminal on exit
     return 0;
-}
+}   
