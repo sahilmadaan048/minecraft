@@ -1,20 +1,31 @@
+#include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <termios.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <math.h>
+#define X_PIXELS 900
+#define Y_PIXELS 180
+#define X_BLOCKS 20
+#define Y_BLOCKS 20
+#define Z_BLOCKS 10
+#define EYE_HEIGHT 1.5
+#define VIEW_HEIGHT 0.7
+#define VIEW_WIDTH 1
+#define BLOCK_BORDER_SIZE 0.05
 
 static struct termios old_termios, new_termios;
 
+//vect represents a 3D vector in cartesian coordinate system
 typedef struct Vector {
     float x;
     float y;
     float z;
 } vect;
 
+//vect2 represents a pair of angles, likely for describing orientation or spherical coordinates. The names psi and phi are used to describe the angles of a point in 3D space in spherical coordinate system
 typedef struct Vector2 {
     float psi;
     float phi;
@@ -68,7 +79,7 @@ void process_input() {
     
     //reading input from the terminal byte by byte and stores it in the variable c
     while(read(STDIN_FILENO, &c, 1) > 0) {
-        printf("\ninput: %c", c);
+        // printf("\ninput: %c", c);
         //get the ASCII for the input character
         unsigned char uc = (unsigned char)c;
         
@@ -77,10 +88,69 @@ void process_input() {
     }
 }   
 
+//check if the key is pressed
+int is_key_pressed(char key) {
+    return keystate[(unsigned char)key];
+}
+
+//initialise a image in the program by creating a image buffer
+//make an array of size Y_PIXELS, each storing an array of characters of size X_PIXELS
+char** init_picture() {
+    char** picture = malloc(sizeof(char*) * Y_PIXELS);
+    for(int i=0; i< Y_PIXELS; i++) {
+        picture[i] = malloc(sizeof(char) * X_PIXELS);
+    }
+    return picture;
+}
+
+//make/initialise a grid based block for the game
+char*** init_blocks() {
+    char*** blocks = malloc(sizeof(char**)  * Z_BLOCKS);
+    for(int i=0; i< Z_BLOCKS; i++) {
+        blocks[i] = malloc(sizeof(char*) * Y_BLOCKS);
+        for(int j=0; j< Y_BLOCKS; j++) {
+            blocks[i][j] = malloc(sizeof(char) * X_BLOCKS);
+            for(int k=0; k<X_BLOCKS; k++) {
+                blocks[i][j][k] = ' ';
+            }
+        }
+    }
+}
+
+// initializes and returns the starting position and viewing angles of the player in the game
+player_pos_view init_posview() {
+    player_pos_view posview;
+    posview.pos.x = 5;
+    posview.pos.y = 5;
+    posview.pos.z = 4 + EYE_HEIGHT;
+    posview.view.psi = 0;
+    posview.view.phi = 0;
+    return posview;
+}
+
 int main() {
     init_terminal();
+    char** picture = init_picture();
+    char*** blocks = init_blocks(); 
+    for(int i=0; i<X_BLOCKS; i++) {
+        for(int j=0; j<Y_BLOCKS; j++) {
+            for(int k=0; k<Z_BLOCKS; k++) {
+                blocks[i][j][k] = '@';
+            }
+        }
+    }
+    player_pos_view posview = init_posview();   
     while(1) {
+        //ready to process the input
         process_input();
+
+        //exit in case 'q' is pressed by the user playing the game
+        if(is_key_pressed('q')) {
+            exit(0);
+        }
+
+        //on each key pressed update the player position and viewing angles
+        update_pos_view(&posview, blocks);
     }
     restore_terminal();
     return 0;
