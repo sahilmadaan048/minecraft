@@ -610,5 +610,3 @@ int main() {
     restore_terminal();           // Reset terminal on exit
     return 0;
 }
-
-// write the code using some library which would work according to you while keeping the functionality same and comments intact as much as possible
