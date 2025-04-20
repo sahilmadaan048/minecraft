@@ -64,18 +64,17 @@ These controls allow full movement and camera orientation within the 3D-rendered
 
 ## 📸 Screenshots
 
-_Replace these with real gameplay images:_
 
 ![Screenshot 1](./images/screenshot1.png)
 ![Screenshot 2](./images/screenshot2.png)
 
 ---
 
-<!-- ## 🎥 Demo Video -->
+## 🎥 Demo Video
 
-<!-- Watch a demo of the raycasting engine in action: -->
+Watch a demo of the raycasting engine in action:
 
-<!-- [![Watch the demo](https://img.youtube.com/vi/YOUTUBE_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUTUBE_VIDEO_ID) -->
+[![Watch the demo](https://www.youtube.com/watch?v=doJOAkkuHcE/0.jpg)](https://www.youtube.com/watch?v=doJOAkkuHcE)
 
 ---
 
@@ -94,8 +93,6 @@ minecraft/
 ---
 
 ## 📜 License
-MIT License
-
 Copyright (c) 2025 sahilmadaan048
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -122,5 +119,3 @@ SOFTWARE.
 
 - Project by [Sahil Madaan](https://github.com/sahilmadaan048)
 - Inspired by Wolfenstein 3D & Minecraft visuals
-
-```
