@@ -74,9 +74,10 @@ These controls allow full movement and camera orientation within the 3D-rendered
 
 Watch a demo of the raycasting engine in action:
 
-[![Watch the demo](https://www.youtube.com/watch?v=doJOAkkuHcE/0.jpg)](https://www.youtube.com/watch?v=doJOAkkuHcE)
+[![Watch the demo](https://img.youtube.com/vi/doJOAkkuHcE/0.jpg)](https://www.youtube.com/watch?v=doJOAkkuHcE)
 
 ---
+
 
 ## 📁 Project Structure
 
