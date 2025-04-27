@@ -118,5 +118,5 @@ SOFTWARE.
 
 ## 🙌 Credits
 
-- Project by [Sahil Madaan](https://github.com/sahilmadaan048)
+- Project by Chinmay Anand (NIT Srinagar CIVIL)
 - Inspired by Wolfenstein 3D & Minecraft visuals
